@@ -7,11 +7,14 @@ import time
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
+LABEL = "JoDio"
+
 # CSV filename to store the landmark data
-csv_filename = r"csvFiles/body_landmarks.csv"
+csv_filename = fr"csvFiles/body_landmarks_{LABEL}.csv"
 
 # Define header for the CSV (99 values: x, y, z for each of 33 landmarks)
 header = [f"Landmark_{i}_{coord}" for i in range(33) for coord in ['x', 'y', 'z']]
+header.insert(0, "Label")
 
 # Write the header to the CSV file
 with open(csv_filename, mode='w', newline='') as csv_file:
@@ -67,7 +70,7 @@ try:
             # If body landmarks are detected, extract and draw them
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
-                current_landmark_values = []
+                current_landmark_values = [f"{LABEL}"]
                 for landmark in landmarks:
                     if landmark.visibility < 0.6:
                         current_landmark_values.extend([None, None, None])
