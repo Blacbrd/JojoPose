@@ -1,6 +1,7 @@
 import mediapipe as mp
 import cv2
 import csv
+import time
 
 # Set up MediaPipe Pose
 mp_drawing = mp.solutions.drawing_utils
@@ -18,7 +19,6 @@ with open(csv_filename, mode='w', newline='') as csv_file:
     writer.writerow(header)
 
 # Instructions for the user
-print(f"Press ENTER to capture the current body landmark data into {csv_filename}.")
 print("Press ESC to exit.")
 
 # Initialize video capture
@@ -27,10 +27,20 @@ if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
+start = time.time()
+print("Get ready to pose!")
+while time.time() - start < 5.0:
+
+    pass
+
+print("pose!")
+
+start2 = time.time()
+
 # Main loop with Pose processing
 try:
     with mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6) as pose:
-        while cap.isOpened():
+        while cap.isOpened() and (time.time() - start2 < 8.0):
             ret, frame = cap.read()
             if not ret:
                 print("Ignoring empty frame.")
@@ -59,24 +69,30 @@ try:
                 landmarks = results.pose_landmarks.landmark
                 current_landmark_values = []
                 for landmark in landmarks:
-                    current_landmark_values.extend([landmark.x, landmark.y, landmark.z])
+                    if landmark.visibility < 0.6:
+                        current_landmark_values.extend([None, None, None])
+                    else:
+                        current_landmark_values.extend([landmark.x, landmark.y, landmark.z])
                 mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            
+            print()
 
             # Show the processed frame
             cv2.imshow("Jojo Pose", image)
 
-            # Capture key presses
+            if current_landmark_values is not None:
+                with open(csv_filename, mode='a', newline='') as csv_file:
+                    writer = csv.writer(csv_file)
+                    writer.writerow(current_landmark_values)
+                print("Data captured.")
+            else:
+                print("No body detected to capture.")
+
+            # If esc pressed or time passed (5 sec)
             key = cv2.waitKey(1) & 0xFF
-            if key == 27:  # ESC key to exit
+            if key == 27:  
                 break
-            elif key == 13:  # Enter key to capture
-                if current_landmark_values is not None:
-                    with open(csv_filename, mode='a', newline='') as csv_file:
-                        writer = csv.writer(csv_file)
-                        writer.writerow(current_landmark_values)
-                    print("Data captured.")
-                else:
-                    print("No body detected to capture.")
+
 
 finally:
     if cap.isOpened():
