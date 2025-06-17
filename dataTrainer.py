@@ -1,66 +1,113 @@
-import mediapipe as mp
-import cv2
 import numpy as np
-from sklearn.neighbors import KNeighborsClassifier
+import tensorflow as tf
+import pandas as pd
+import pickle
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from pathlib import Path
 
-# Set up KNN
-knn = KNeighborsClassifier(n_neighbors=5)
+# Define paths and constants
+DATA_INPUT_PATH = r"C:\Users\blacb\Documents\GitHub\JojoPose\csvFiles"
+MODEL_SAVE_PATH = r"C:\Users\blacb\Documents\GitHub\JojoPose\models\model.h5"
+METADATA_SAVE_PATH = r"C:\Users\blacb\Documents\GitHub\JojoPose\models\landmark_metadata.pkl"
+NUM_POSES = 10
 
-# Set up for mediapipe
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+# Load CSV files from the data folder
+files = list(Path(DATA_INPUT_PATH).glob("*.csv"))
+if not files:
+    raise ValueError("No CSV files found in the data folder.")
 
-# --- Utility Functions ---
-def calculate_angle(a, b, c):
-    a2d = np.array(a[:2])
-    b2d = np.array(b[:2])
-    c2d = np.array(c[:2])
-    ba = a2d - b2d
-    bc = c2d - b2d
-    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
-    return np.degrees(angle)
+# Create dataframes
+dfs = []
+for file in files:
+    df = pd.read_csv(str(file))
+    dfs.append(df)
+df = pd.concat(dfs, axis=0)
 
-def calculate_midpoint(a, b):
-    return [(a[0] + b[0])/2, (a[1] + b[1])/2, (a[2] + b[2])/2]
+# Assume each CSV contains 33 landmarks
+# And 1 
+landmark_columns = df.columns[df.columns.get_loc("Landmark_0_x") : df.columns.get_loc("Landmark_32_z") + 1]
+pose_columns = "Label"
 
-def get_landmark_point(landmark):
-    return [int(landmark.x * frame.shape[1]),
-            int(landmark.y * frame.shape[0]),
-            landmark.z]
+print("Landmarks:", list(landmark_columns))
+print("Poses:", list(pose_columns))
 
-# --- Main loop for openCV ---
-cap = cv2.VideoCapture(0)
+# Prepare features (X) and labels (y)
+X = df[landmark_columns].values    # Shape: (num_samples, 99)
+y = df[pose_columns].astype(int).values  # Shape: (num_samples, {amount of poses})
 
-try:
-    with mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6) as pose:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+# Split into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
 
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image.flags.writeable = False
-            results = pose.process(image)
-            image.flags.writeable = True
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+# Scale the landmark features/standardise them
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test  = scaler.transform(X_test)
 
-            try:
-                landmarks = results.pose_landmarks.landmark
-                
-            except Exception as e:
-                if str(e) == "'NoneType' object has no attribute 'landmark'":
-                    pass
-                else:
-                    print("Error processing pose:", e)
+# Reshape for Conv1D (Batch, length, channels)
+X_train = X_train.reshape(-1, 99, 1)
+X_test = X_test.reshape(-1, 99, 1)
 
-            mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.imshow("Jojo Pose", image)
-            
-            if cv2.waitKey(10) & 0xFF == ord("q"):
-                break
 
-finally:
-    if cap.isOpened():
-        cap.release()
-    cv2.destroyAllWindows()
+
+# Build a 1D CNN for jojo poses
+model = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(99, 1)),
+
+    # Block 1
+    tf.keras.layers.Conv1D(32, kernel_size=3, activation='relu', padding='same'),
+    tf.keras.layers.BatchNormalization(),
+    tf.keras.layers.MaxPooling1D(pool_size=2),
+
+    # Block 2
+    tf.keras.layers.Conv1D(64, kernel_size=3, activation='relu', padding='same'),
+    tf.keras.layers.BatchNormalization(),
+    tf.keras.layers.MaxPooling1D(pool_size=2),
+
+    # Block 3
+    tf.keras.layers.Conv1D(128, kernel_size=3, activation='relu', padding='same'),
+    tf.keras.layers.BatchNormalization(),
+    tf.keras.layers.GlobalMaxPooling1D(),
+
+    # Dense head
+    tf.keras.layers.Dense(128, activation='relu'),
+    tf.keras.layers.Dropout(0.4),
+
+    # Final classification
+    tf.keras.layers.Dense(NUM_POSES, activation='softmax')
+])
+
+# Use sparse categorical crossentropy to avoid one_hot_encoding
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.summary()
+
+# Train
+history = model.fit(
+    X_train, y_train,
+    validation_split=0.1,
+    epochs=50,
+    batch_size=32
+)
+
+# Evaluation
+test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
+print(f"Test Accuracy: {test_accuracy:.4f}")
+
+# Save model + metadata (scaler, landmark names)
+model.save(MODEL_SAVE_PATH)
+with open(METADATA_SAVE_PATH, 'wb') as file:
+    pickle.dump({
+        'scaler': scaler,
+        'landmark_columns': list(landmark_columns),
+        'pose_labels': list(range(NUM_POSES))
+    }, file)
+
+print(f"Model saved to {MODEL_SAVE_PATH}")
+print(f"Metadata saved to {METADATA_SAVE_PATH}")
