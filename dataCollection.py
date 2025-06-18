@@ -2,6 +2,8 @@ import mediapipe as mp
 import cv2
 import csv
 import time
+import math
+import os
 
 # Set up MediaPipe Pose
 mp_drawing = mp.solutions.drawing_utils
@@ -9,95 +11,139 @@ mp_pose = mp.solutions.pose
 
 LABEL = "JoDio"
 
-# CSV filename to store the landmark data
-csv_filename = fr"csvFiles/body_landmarks_{LABEL}.csv"
+# CSV filename to store the feature data
+csv_filename = fr"csvFiles/body_features_{LABEL}.csv"
 
-# Define header for the CSV (99 values: x, y, z for each of 33 landmarks)
-header = [f"Landmark_{i}_{coord}" for i in range(33) for coord in ['x', 'y', 'z']]
-header.insert(0, "Label")
+# Define landmarks of interest for distances and angles
+# Distance pairs: (i, j)
+distance_pairs = [
+    (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+    (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
+    (mp_pose.PoseLandmark.LEFT_WRIST, mp_pose.PoseLandmark.RIGHT_WRIST),
+    (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.RIGHT_ELBOW),
+    (mp_pose.PoseLandmark.NOSE, mp_pose.PoseLandmark.LEFT_WRIST),
+    (mp_pose.PoseLandmark.NOSE, mp_pose.PoseLandmark.RIGHT_WRIST),
+    (mp_pose.PoseLandmark.LEFT_WRIST, mp_pose.PoseLandmark.LEFT_ELBOW),
+    (mp_pose.PoseLandmark.RIGHT_WRIST, mp_pose.PoseLandmark.RIGHT_ELBOW),
+    (mp_pose.PoseLandmark.LEFT_WRIST, mp_pose.PoseLandmark.LEFT_SHOULDER),
+    (mp_pose.PoseLandmark.RIGHT_WRIST, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+    (mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.LEFT_KNEE),
+    (mp_pose.PoseLandmark.RIGHT_ANKLE, mp_pose.PoseLandmark.RIGHT_KNEE),
+    (mp_pose.PoseLandmark.LEFT_WRIST, mp_pose.PoseLandmark.LEFT_ANKLE),
+    (mp_pose.PoseLandmark.RIGHT_WRIST, mp_pose.PoseLandmark.RIGHT_ANKLE),
+]
+# Angle triplets: (a, b, c) angle at b between a-b and c-b
+angle_triplets = [
+    (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
+    (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
+    (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+    (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+    (mp_pose.PoseLandmark.LEFT_WRIST, mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_SHOULDER),
+    (mp_pose.PoseLandmark.RIGHT_WRIST, mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+]
 
-# Write the header to the CSV file
-with open(csv_filename, mode='w', newline='') as csv_file:
+# Build CSV header
+def build_header():
+    header = ["Label"]
+    for (i, j) in distance_pairs:
+        header.append(f"dist_{i.name.lower()}_{j.name.lower()}")
+    for (a, b, c) in angle_triplets:
+        header.append(f"angle_{a.name.lower()}_{b.name.lower()}_{c.name.lower()}")
+    return header
+
+# Check if file exists to decide write or append
+file_exists = os.path.isfile(csv_filename)
+mode = 'a' if file_exists else 'w'
+with open(csv_filename, mode=mode, newline='') as csv_file:
     writer = csv.writer(csv_file)
-    writer.writerow(header)
+    if not file_exists:
+        writer.writerow(build_header())
 
-# Instructions for the user
 print("Press ESC to exit.")
-
-# Initialize video capture
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
+# Helper functions
+
+def get_landmark(landmarks, lm):
+    """Return landmark or None if not visible enough"""
+    val = landmarks[lm.value]
+    return (val.x, val.y, val.z) if val.visibility >= 0.8 else None
+
+
+def compute_distance(p1, p2):
+    if p1 is None or p2 is None:
+        return None
+    return math.dist(p1[:2], p2[:2])
+
+
+def compute_angle(a, b, c):
+    if a is None or b is None or c is None:
+        return None
+    # vectors ba and bc
+    ba = (a[0] - b[0], a[1] - b[1])
+    bc = (c[0] - b[0], c[1] - b[1])
+    dot = ba[0]*bc[0] + ba[1]*bc[1]
+    mag = math.hypot(*ba) * math.hypot(*bc)
+    if mag == 0:
+        return None
+    cos_angle = max(-1.0, min(1.0, dot/mag))
+    return math.degrees(math.acos(cos_angle))
+
+print("Get ready to pose...")
 start = time.time()
-print("Get ready to pose!")
 while time.time() - start < 5.0:
-
     pass
-
-print("pose!")
-
+print("Pose now!")
 start2 = time.time()
 
-# Main loop with Pose processing
 try:
     with mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6) as pose:
         while cap.isOpened() and (time.time() - start2 < 8.0):
             ret, frame = cap.read()
             if not ret:
-                print("Ignoring empty frame.")
                 break
 
-            # Flip the frame horizontally for a mirror view
             frame = cv2.flip(frame, 1)
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image.flags.writeable = False
-            results = pose.process(image)
-            image.flags.writeable = True
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img_rgb.flags.writeable = False
+            results = pose.process(img_rgb)
+            img_rgb.flags.writeable = True
+            output = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-            # Draw crosshair lines for alignment
-            height, width, _ = image.shape
-            center_x = width // 2
-            center_y = height // 2
-            cv2.line(image, (center_x, 0), (center_x, height), (0, 255, 0), 1)
-            cv2.line(image, (0, center_y), (width, center_y), (0, 255, 0), 1)
-
-            # Reset current landmarks for this frame
-            current_landmark_values = None
-
-            # If body landmarks are detected, extract and draw them
+            # Draw landmarks
             if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                current_landmark_values = [f"{LABEL}"]
-                for landmark in landmarks:
-                    if landmark.visibility < 0.6:
-                        current_landmark_values.extend([None, None, None])
-                    else:
-                        current_landmark_values.extend([landmark.x, landmark.y, landmark.z])
-                mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            
-            print()
+                mp_drawing.draw_landmarks(output, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-            # Show the processed frame
-            cv2.imshow("Jojo Pose", image)
+            cv2.imshow("Jojo Pose", output)
 
-            if current_landmark_values is not None:
-                with open(csv_filename, mode='a', newline='') as csv_file:
-                    writer = csv.writer(csv_file)
-                    writer.writerow(current_landmark_values)
-                print("Data captured.")
+            # Extract features
+            row = [LABEL]
+            if results.pose_landmarks:
+                lms = results.pose_landmarks.landmark
+                # gather points
+                pts = {lm: get_landmark(lms, lm) for lm in set([i for pair in distance_pairs for i in pair] + [b for (_, b, _) in angle_triplets] + [a for (a, _, _) in angle_triplets] + [c for (_, _, c) in angle_triplets])}
+                # compute distances
+                hip_width = compute_distance(pts[mp_pose.PoseLandmark.LEFT_HIP], pts[mp_pose.PoseLandmark.RIGHT_HIP]) or 1.0
+                for (i, j) in distance_pairs:
+                    d = compute_distance(pts[i], pts[j])
+                    row.append(None if d is None else d/hip_width)
+                # compute angles
+                for (a, b, c) in angle_triplets:
+                    row.append(compute_angle(pts[a], pts[b], pts[c]))
             else:
-                print("No body detected to capture.")
+                row.extend([None] * (len(distance_pairs) + len(angle_triplets)))
 
-            # If esc pressed or time passed (5 sec)
+            # Save row to CSV
+            with open(csv_filename, mode='a', newline='') as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(row)
+
             key = cv2.waitKey(1) & 0xFF
-            if key == 27:  
+            if key == 27:
                 break
-
-
 finally:
-    if cap.isOpened():
-        cap.release()
+    cap.release()
     cv2.destroyAllWindows()

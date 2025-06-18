@@ -111,3 +111,4 @@ with open(METADATA_SAVE_PATH, 'wb') as file:
 
 print(f"Model saved to {MODEL_SAVE_PATH}")
 print(f"Metadata saved to {METADATA_SAVE_PATH}")
+
